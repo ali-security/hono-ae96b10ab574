@@ -741,6 +741,23 @@ describe('Cache Skipping Logic', () => {
     expect(putSpy).not.toHaveBeenCalled()
   })
 
+  it('Should cache request URLs containing a fragment', async () => {
+    const { mockCache } = stubStoreBackedCache()
+    const app = new Hono()
+    let requestCount = 0
+    app.use('*', cache({ cacheName: 'fragment-request-test', wait: true }))
+    app.get('/', (c) => {
+      requestCount++
+      return c.text(c.req.query('name') ?? 'default')
+    })
+
+    expect(await (await app.request('http://localhost/#?name=probe')).text()).toBe('default')
+    expect(await (await app.request('http://localhost/#?name=probe')).text()).toBe('default')
+    expect(requestCount).toBe(1)
+    expect(mockCache.put).toHaveBeenCalledOnce()
+    expect(mockCache.put.mock.calls[0][0]).toBe('http://localhost/#?name=probe')
+  })
+
   it('Should not use or store cache for POST requests', async () => {
     const app = new Hono()
     let postCount = 0
@@ -764,5 +781,33 @@ describe('Cache Skipping Logic', () => {
     expect(res.headers.get('Cache-Control')).toBeNull()
     expect(matchSpy).not.toHaveBeenCalled()
     expect(putSpy).not.toHaveBeenCalled()
+  })
+
+  it('Should preserve fragments in custom cache keys', async () => {
+    const { mockCache } = stubStoreBackedCache()
+    const app = new Hono()
+    let requestCount = 0
+    app.use(
+      '/report',
+      cache({
+        cacheName: 'custom-fragment-key-test',
+        wait: true,
+        keyGenerator: (c) => `${c.req.path}#${c.req.header('X-Tenant-Id')}`,
+      })
+    )
+    app.get('/report', (c) => {
+      requestCount++
+      return c.text(`report for ${c.req.header('X-Tenant-Id')}`)
+    })
+
+    const request = (tenant: string) =>
+      app.request('/report', { headers: { 'X-Tenant-Id': tenant } })
+
+    expect(await (await request('acme')).text()).toBe('report for acme')
+    expect(await (await request('globex')).text()).toBe('report for globex')
+    expect(await (await request('acme')).text()).toBe('report for acme')
+    expect(requestCount).toBe(2)
+    expect(mockCache.put).toHaveBeenCalledTimes(2)
+    expect(mockCache.put.mock.calls.map(([key]) => key)).toEqual(['/report#acme', '/report#globex'])
   })
 })
